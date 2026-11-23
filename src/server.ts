@@ -1,6 +1,7 @@
-import app from "./app.js";
-import config from "./app/config/index.js";
-import { prisma } from "./app/lib/prisms.js";
+import app from "./app";
+import config from "./app/config/index";
+import { prisma } from "./app/lib/prisms";
+import { redisClient } from "./app/lib/redis";
 
 const port = config.port;
 

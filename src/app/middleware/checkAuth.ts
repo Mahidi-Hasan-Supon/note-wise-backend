@@ -51,14 +51,12 @@ export const auth = (...requiredRole: Role[]) => {
       const user = await prisma.user.findUnique({
         where: { id: userId },
       });
-
-      if (!user) {
-        throw new AppError(httpStatus.UNAUTHORIZED, "Please login again");
-      }
+   
 
       if (!user || user.deletedAt) {
         throw new AppError(httpStatus.UNAUTHORIZED, "Please login again");
       }
+
 
       if (user.status === "BLOCKED") {
         throw new AppError(
@@ -66,6 +64,8 @@ export const auth = (...requiredRole: Role[]) => {
           "Your account has been blocked",
         );
       }
+
+
       // Role database থেকে যাচাই, token-এর পুরনো role দিয়ে না
       if (requiredRole.length && !requiredRole.includes(user.role)) {
         throw new AppError(
@@ -74,12 +74,14 @@ export const auth = (...requiredRole: Role[]) => {
         );
       }
 
+
       req.user = {
         userId: user.id,
         name: user.name,
         email: user.email,
         role: user.role,
       };
+      
 
       next();
     },

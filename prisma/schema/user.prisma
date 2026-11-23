@@ -1,7 +1,21 @@
-model User {
-    id  String @id @default(uuid())
-    name String 
-    email String @unique
-    password String?
-}
 
+
+model User {
+  id              String   @id @default(uuid())
+  name            String
+  email           String   @unique
+  password        String?
+  googleId        String?  @unique
+  authProvider       AuthProvider @default(CREDENTIAL)
+  imageUrl       String?
+  imagePublicId  String?
+  role            Role     @default(STUDENT)
+  status        UserStatus  @default(ACTIVE)
+  isEmailVerified Boolean  @default(false)
+  deletedAt DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("users")
+}

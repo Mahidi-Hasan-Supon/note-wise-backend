@@ -1,10 +1,10 @@
 
 import { Router } from "express";
 
-import { AuthController } from "./auth.controller";
 import { AuthValidation } from "./auth.validation";
 import { validationRequest } from "../../middleware/validationRequestByZod";
 import { auth } from "../../middleware/checkAuth";
+import { authController } from "./auth.controller";
 
 
 const router = Router();
@@ -12,59 +12,59 @@ const router = Router();
 router.post(
   "/register",
   validationRequest(AuthValidation.register),
-  AuthController.register,
+  authController.registerUser,
 );
 
 router.post(
   "/verify-email",
   validationRequest(AuthValidation.verifyEmail),
-  AuthController.verifyEmail,
+  authController.verifyEmail,
 );
 
 router.post(
   "/resend-registration-otp",
   validationRequest(AuthValidation.resendOTP),
-  AuthController.resendRegistrationOTP,
+  authController.resendVerificationOtp,
 );
 
 router.post(
   "/login",
   validationRequest(AuthValidation.login),
-  AuthController.login,
+  authController.loginUser,
 );
 
 router.get(
   "/me",
   auth(),
-  AuthController.getMe,
+  authController.getMe,
 );
 
 router.post(
   "/refresh-token",
-  AuthController.refreshToken,
+  authController.refreshToken,
 );
 
 router.post(
   "/forgot-password",
   validationRequest(AuthValidation.forgotPassword),
-  AuthController.forgotPassword,
+  authController.forgotPassword,
 );
 
 router.post(
   "/resend-forgot-password-otp",
   validationRequest(AuthValidation.resendOTP),
-  AuthController.resendForgotPasswordOTP,
+  authController.resendForgotPasswordOtp,
 );
 
 router.post(
   "/reset-password",
   validationRequest(AuthValidation.resetPassword),
-  AuthController.resetPassword,
+  authController.resetPassword,
 );
 
 router.post(
   "/logout",
-  AuthController.logout,
+  authController.logOut,
 );
 
 export const AuthRoutes = router;

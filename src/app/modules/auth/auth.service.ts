@@ -11,21 +11,19 @@ import { redisClient } from "../../lib/redis";
 import { transporter } from "../../lib/nodemailer";
 import { AppError } from "../../utiles/appError";
 import { jwtUtils } from "../../utiles/jwt";
-import { ILoginPayload, IRegisterPayload, IRegistrationData, IResetPasswordPayload, IVerifyEmailPayload } from "./auth.interface";
 
+import {
+  ILoginPayload,
+  IRegisterPayload,
+  IRegistrationData,
+  IResetPasswordPayload,
+  IVerifyEmailPayload,
+} from "./auth.interface";
 
-// Redis keys
-const registrationOtpKey = (email: string) => `notwise:register:otp:${email}`;
+const generateOTP = () => {
+  return randomInt(100000, 1000000).toString();
+};
 
-const registrationDataKey = (email: string) => `notwise:register:data:${email}`;
-
-const forgotPasswordOtpKey = (email: string) =>
-  `notwise:forgot-password:otp:${email}`;
-
-// Generate OTP
-const generateOTP = () => randomInt(100000, 1000000).toString();
-
-// Generate tokens
 const generateTokens = (user: {
   id: string;
   name: string;
@@ -51,44 +49,29 @@ const generateTokens = (user: {
     config.refresh_expires_in as string,
   );
 
-  return { accessToken, refreshToken };
+  return {
+    accessToken,
+    refreshToken,
+  };
 };
 
-// Send registration OTP email
-const sendRegistrationOtpEmail = async (
-  name: string,
-  email: string,
-  otp: string,
-) => {
-  const html = await ejs.renderFile(
-    path.join(process.cwd(), "src/app/templates/registration-user-otp.ejs"),
-    { name, otp },
-  );
-
-  await transporter.sendMail({
-    from: config.email_sender,
-    to: email,
-    subject: "Verify your Notwise account",
-    html,
-  });
-};
-
-// 1. Register User
 const registerUser = async (payload: IRegisterPayload) => {
   const name = payload.name.trim();
-  const email = payload.email.trim().toLowerCase();    
-      
-  const existingUser = await prisma.user.findUnique({    
-    where: { email },
+  const email = payload.email.toLowerCase().trim();
+
+  const existingUser = await prisma.user.findUnique({
+    where: {
+      email,
+    },
   });
 
   if (existingUser) {
     throw new AppError(
       httpStatus.CONFLICT,
-      "An account already exists with this email",
+      "User already exists with this email",
     );
   }
-   
+
   const hashedPassword = await bcrypt.hash(
     payload.password,
     Number(config.bcrypt_salt_rounds),
@@ -96,25 +79,49 @@ const registerUser = async (payload: IRegisterPayload) => {
 
   const otp = generateOTP();
 
+  const otpKey = `notwise:register:otp:${email}`;
+  const registrationDataKey = `notwise:register:data:${email}`;
+
   const registrationData: IRegistrationData = {
     name,
     email,
     password: hashedPassword,
   };
 
-  const otpKey = registrationOtpKey(email);
-  const dataKey = registrationDataKey(email);
-   
-  await redisClient.set(otpKey, otp, { EX: 300 });
-  await redisClient.set(dataKey, JSON.stringify(registrationData), {
+  await redisClient.set(otpKey, otp, {
     EX: 300,
   });
 
+  await redisClient.set(registrationDataKey, JSON.stringify(registrationData), {
+    EX: 300,
+  });
+
+  // console.log("REGISTER EMAIL:", email);
+  // console.log("REGISTER DATA KEY:", registrationDataKey);
+  // console.log(
+  //   "REGISTER SAVED DATA:",
+  //   await redisClient.get(registrationDataKey),
+  // );
+  // console.log("REGISTER DATA TTL:", await redisClient.ttl(registrationDataKey));
+
   try {
-    await sendRegistrationOtpEmail(name, email, otp);
+    const html = await ejs.renderFile(
+      path.join(process.cwd(), "src/app/template/registration-user-otp.ejs"),
+      {
+        name,
+        otp,
+      },
+    );
+
+    await transporter.sendMail({
+      from: config.email_sender,
+      to: email,
+      subject: "Verify Your Email - Notwise",
+      html,
+    });
   } catch (error) {
-    await redisClient.del([otpKey, dataKey]);
-    console.error("Registration email error:", error);
+    await redisClient.del(otpKey);
+    await redisClient.del(registrationDataKey);
 
     throw new AppError(
       httpStatus.INTERNAL_SERVER_ERROR,
@@ -123,25 +130,23 @@ const registerUser = async (payload: IRegisterPayload) => {
   }
 
   return {
-    email,
-    message: "OTP sent to your email. Please verify your email",
+    message: "A verification OTP has been sent to your email",
   };
 };
 
-// 2. Verify Email
 const verifyEmail = async (payload: IVerifyEmailPayload) => {
-  const email = payload.email.trim().toLowerCase();
+  const email = payload.email.toLowerCase().trim();
 
-  const otpKey = registrationOtpKey(email);
-  const dataKey = registrationDataKey(email);
+  const otpKey = `notwise:register:otp:${email}`;
+  const registrationDataKey = `notwise:register:data:${email}`;
 
   const savedOtp = await redisClient.get(otpKey);
-  const savedData = await redisClient.get(dataKey);
+  const savedRegistrationData = await redisClient.get(registrationDataKey);
 
-  if (!savedOtp || !savedData) {
+  if (!savedOtp || !savedRegistrationData) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
-      "OTP expired. Please register again",
+      "OTP expired or registration data not found",
     );
   }
 
@@ -149,18 +154,21 @@ const verifyEmail = async (payload: IVerifyEmailPayload) => {
     throw new AppError(httpStatus.BAD_REQUEST, "Invalid OTP");
   }
 
-  const registrationData = JSON.parse(savedData) as IRegistrationData;
+  const registrationData: IRegistrationData = JSON.parse(savedRegistrationData);
 
   const existingUser = await prisma.user.findUnique({
-    where: { email },
+    where: {
+      email,
+    },
   });
 
   if (existingUser) {
-    await redisClient.del([otpKey, dataKey]);
+    await redisClient.del(otpKey);
+    await redisClient.del(registrationDataKey);
 
     throw new AppError(
       httpStatus.CONFLICT,
-      "An account already exists with this email",
+      "User already exists with this email",
     );
   }
 
@@ -176,61 +184,108 @@ const verifyEmail = async (payload: IVerifyEmailPayload) => {
     },
   });
 
-  await redisClient.del([otpKey, dataKey]);
+  await redisClient.del(otpKey);
+  await redisClient.del(registrationDataKey);
 
-  // Welcome email
   try {
     const html = await ejs.renderFile(
-      path.join(process.cwd(), "src/app/templates/student-welcome-email.ejs"),
-      { name: user.name },
+      path.join(process.cwd(), "src/app/template/student-welcome-email.ejs"),
+      {
+        name: user.name,
+        email: user.email,
+      },
     );
 
     await transporter.sendMail({
       from: config.email_sender,
       to: user.email,
-      subject: "Welcome to Notwise",
+      subject: "Welcome to Notwise!",
       html,
     });
   } catch (error) {
-    console.error("Welcome email error:", error);
+    console.error("Welcome email sending failed:", error);
   }
 
-  const { accessToken, refreshToken } = generateTokens(user);
+  const tokens = generateTokens({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+  });
+
   const { password, ...userWithoutPassword } = user;
 
   return {
-    accessToken,
-    refreshToken,
     user: userWithoutPassword,
+    ...tokens,
   };
-};  
+};
 
-// 3. Resend Verification OTP
 const resendVerificationOtp = async (email: string) => {
-  email = email.trim().toLowerCase();
+  console.log("===== RESEND FUNCTION STARTED =====");
+  console.log("RECEIVED EMAIL:", email);
 
-  const savedData = await redisClient.get(registrationDataKey(email));
+  email = email.toLowerCase().trim();
 
-  if (!savedData) {
+  const registrationDataKey = `notwise:register:data:${email}`;
+  const otpKey = `notwise:register:otp:${email}`;
+
+  // console.log("RESEND EMAIL:", email);
+  // console.log("RESEND DATA KEY:", registrationDataKey);
+  // console.log("REDIS READY:", redisClient.isReady);
+
+  const savedRegistrationData = await redisClient.get(
+    registrationDataKey,
+  );
+
+  // console.log("RESEND SAVED DATA:", savedRegistrationData);
+
+  // console.log(
+  //   "RESEND DATA TTL:",
+  //   await redisClient.ttl(registrationDataKey),
+  // );
+
+  if (!savedRegistrationData) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
       "Registration session expired. Please register again",
     );
   }
 
-  const registrationData = JSON.parse(savedData) as IRegistrationData;
+  const registrationData: IRegistrationData = JSON.parse(
+    savedRegistrationData,
+  );
 
   const otp = generateOTP();
 
-  await redisClient.set(registrationOtpKey(email), otp, {
+  await redisClient.set(otpKey, otp, {
     EX: 300,
   });
 
+  await redisClient.expire(registrationDataKey, 300);
+
   try {
-    await sendRegistrationOtpEmail(registrationData.name, email, otp);
+    const html = await ejs.renderFile(
+      path.join(
+        process.cwd(),
+        "src/app/template/registration-user-otp.ejs",
+      ),
+      {
+        name: registrationData.name,
+        otp,
+      },
+    );
+
+    await transporter.sendMail({
+      from: config.email_sender,
+      to: email,
+      subject: "New Email Verification OTP - Notwise",
+      html,
+    });
   } catch (error) {
-    await redisClient.del(registrationOtpKey(email));
-    console.error("Resend verification email error:", error);
+    console.error("RESEND OTP EMAIL ERROR:", error);
+
+    await redisClient.del(otpKey);
 
     throw new AppError(
       httpStatus.INTERNAL_SERVER_ERROR,
@@ -239,20 +294,21 @@ const resendVerificationOtp = async (email: string) => {
   }
 
   return {
-    message: "Verification OTP resent successfully",
+    message: "A new verification OTP has been sent to your email",
   };
-}; 
-
-// 4. Login User
+};
+   
 const loginUser = async (payload: ILoginPayload) => {
-  const email = payload.email.trim().toLowerCase();
+  const email = payload.email.toLowerCase().trim();
 
   const user = await prisma.user.findUnique({
-    where: { email },
+    where: {
+      email,
+    },
   });
 
   if (!user || user.deletedAt) {
-    throw new AppError(httpStatus.UNAUTHORIZED, "Invalid email or password");
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
 
   if (user.status === "BLOCKED") {
@@ -264,7 +320,10 @@ const loginUser = async (payload: ILoginPayload) => {
   }
 
   if (!user.password) {
-    throw new AppError(httpStatus.UNAUTHORIZED, "Invalid email or password");
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Please login using your registered authentication method",
+    );
   }
 
   const isPasswordMatched = await bcrypt.compare(
@@ -276,20 +335,26 @@ const loginUser = async (payload: ILoginPayload) => {
     throw new AppError(httpStatus.UNAUTHORIZED, "Invalid email or password");
   }
 
-  const { accessToken, refreshToken } = generateTokens(user);
+  const tokens = generateTokens({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+  });
+
   const { password, ...userWithoutPassword } = user;
 
   return {
-    accessToken,
-    refreshToken,
     user: userWithoutPassword,
+    ...tokens,
   };
 };
-
-// 5. Get Me
+   
 const getMe = async (userId: string) => {
   const user = await prisma.user.findUnique({
-    where: { id: userId },
+    where: {
+      id: userId,
+    },
     select: {
       id: true,
       name: true,
@@ -307,7 +372,7 @@ const getMe = async (userId: string) => {
   });
 
   if (!user || user.deletedAt) {
-    throw new AppError(httpStatus.UNAUTHORIZED, "Please login again");
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
 
   if (user.status === "BLOCKED") {
@@ -316,72 +381,88 @@ const getMe = async (userId: string) => {
 
   return user;
 };
-
-// 6. Refresh Token
+   
 const refreshToken = async (token: string) => {
-  const verified = jwtUtils.verifyToken(token, config.refresh_secret);
+  const verifiedToken = jwtUtils.verifyToken(token, config.refresh_secret);
 
-  if (!verified.success) {
+  if (!verifiedToken.success) {
     throw new AppError(
       httpStatus.UNAUTHORIZED,
       "Invalid or expired refresh token",
     );
   }
 
-  const { userId } = verified.data as JwtPayload;
+  const decodedData = verifiedToken.data as JwtPayload;
+
+  const userId = decodedData.userId as string;
 
   const user = await prisma.user.findUnique({
-    where: { id: userId as string },
+    where: {
+      id: userId,
+    },
   });
 
   if (!user || user.deletedAt) {
-    throw new AppError(httpStatus.UNAUTHORIZED, "Please login again");
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
 
   if (user.status === "BLOCKED") {
     throw new AppError(httpStatus.FORBIDDEN, "Your account has been blocked");
   }
 
-  const { accessToken, refreshToken } = generateTokens(user);
-
-  return { accessToken, refreshToken };
-};
-  
-// 7. Forgot Password
-const forgotPassword = async (email: string) => {
-  email = email.trim().toLowerCase();
-
-  const user = await prisma.user.findUnique({
-    where: { email },
+  const tokens = generateTokens({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
   });
 
+  return tokens;
+};
+
+const forgotPassword = async (email: string) => {
+  email = email.toLowerCase().trim();
+
+  const user = await prisma.user.findUnique({
+    where: {
+      email,
+    },
+  });
+
+  const genericMessage = {
+    message:
+      "If an account exists with this email, a password reset OTP has been sent",
+  };
+
   if (!user || user.deletedAt || !user.password) {
-    return {
-      message: "If the account exists, a password reset OTP will be sent",
-    };
+    return genericMessage;
   }
+
+  const otpKey = `notwise:forgot-password:otp:${email}`;
 
   const otp = generateOTP();
 
-  await redisClient.set(forgotPasswordOtpKey(email), otp, {
+  await redisClient.set(otpKey, otp, {
     EX: 300,
   });
 
   try {
     const html = await ejs.renderFile(
-      path.join(process.cwd(), "src/app/templates/forget-password-otp.ejs"),
-      { name: user.name, otp },
+      path.join(process.cwd(), "src/app/template/forget-password-otp.ejs"),
+      {
+        name: user.name,
+        otp,
+      },
     );
 
     await transporter.sendMail({
       from: config.email_sender,
       to: email,
-      subject: "Notwise password reset OTP",
+      subject: "Password Reset OTP - Notwise",
       html,
     });
   } catch (error) {
-    await redisClient.del(forgotPasswordOtpKey(email));
-    console.error("Forgot password email error:", error);
+    await redisClient.del(otpKey);
 
     throw new AppError(
       httpStatus.INTERNAL_SERVER_ERROR,
@@ -389,28 +470,71 @@ const forgotPassword = async (email: string) => {
     );
   }
 
-  return {
-    message: "Password reset OTP sent successfully",
-  };
+  return genericMessage;
 };
 
-// 8. Resend Forgot Password OTP
 const resendForgotPasswordOtp = async (email: string) => {
-  return forgotPassword(email);
+  email = email.toLowerCase().trim();
+
+  const user = await prisma.user.findUnique({
+    where: {
+      email,
+    },
+  });
+
+  const genericMessage = {
+    message:
+      "If an account exists with this email, a password reset OTP has been sent",
+  };
+
+  if (!user || user.deletedAt || !user.password) {
+    return genericMessage;
+  }
+
+  const otpKey = `notwise:forgot-password:otp:${email}`;
+
+  const otp = generateOTP();
+
+  await redisClient.set(otpKey, otp, {
+    EX: 300,
+  });
+
+  try {
+    const html = await ejs.renderFile(
+      path.join(process.cwd(), "src/app/template/forget-password-otp.ejs"),
+      {
+        name: user.name,
+        otp,
+      },
+    );
+
+    await transporter.sendMail({
+      from: config.email_sender,
+      to: email,
+      subject: "New Password Reset OTP - Notwise",
+      html,
+    });
+  } catch (error) {
+    await redisClient.del(otpKey);
+
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      "Failed to resend password reset OTP",
+    );
+  }
+
+  return genericMessage;
 };
 
-// 9. Reset Password
 const resetPassword = async (payload: IResetPasswordPayload) => {
-  const email = payload.email.trim().toLowerCase();
-  const otpKey = forgotPasswordOtpKey(email);
+  const email = payload.email.toLowerCase().trim();
+
+  const otpKey = `notwise:forgot-password:otp:${email}`;
 
   const savedOtp = await redisClient.get(otpKey);
 
   if (!savedOtp) {
-    throw new AppError(
-      httpStatus.BAD_REQUEST,
-      "OTP expired. Please request a new OTP",
-    );
+    throw new AppError(httpStatus.BAD_REQUEST, "OTP expired or not found");
   }
 
   if (savedOtp !== payload.otp) {
@@ -418,11 +542,20 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
   }
 
   const user = await prisma.user.findUnique({
-    where: { email },
+    where: {
+      email,
+    },
   });
 
-  if (!user || user.deletedAt || !user.password) {
+  if (!user || user.deletedAt) {
     throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  if (!user.password) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Password reset is not available for this account",
+    );
   }
 
   const hashedPassword = await bcrypt.hash(
@@ -431,26 +564,32 @@ const resetPassword = async (payload: IResetPasswordPayload) => {
   );
 
   await prisma.user.update({
-    where: { id: user.id },
-    data: { password: hashedPassword },
+    where: {
+      id: user.id,
+    },
+    data: {
+      password: hashedPassword,
+    },
   });
 
   await redisClient.del(otpKey);
 
   try {
     const html = await ejs.renderFile(
-      path.join(process.cwd(), "src/app/templates/reset-password-otp.ejs"),
-      { name: user.name },
+      path.join(process.cwd(), "src/app/template/reset-password-otp.ejs"),
+      {
+        name: user.name,
+      },
     );
 
     await transporter.sendMail({
       from: config.email_sender,
-      to: user.email,
-      subject: "Notwise password changed",
+      to: email,
+      subject: "Password Reset Successful - Notwise",
       html,
     });
   } catch (error) {
-    console.error("Password reset confirmation email error:", error);
+    console.error("Password reset confirmation email failed:", error);
   }
 
   return {

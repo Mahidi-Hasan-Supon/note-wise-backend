@@ -24,7 +24,7 @@ app.use(cookieParser());
 
 app.use("/api/v3/auth", AuthRoutes);
 
-app.use("/", async (req: Request, res: Response) => {
+app.get("/", (req: Request, res: Response) => {
   res.status(httpStatus.OK).json({
     success: true,
     message: "Welcome to our Note Wise Project",

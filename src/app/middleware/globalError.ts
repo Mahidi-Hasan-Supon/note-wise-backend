@@ -15,7 +15,7 @@ export const globalErrorHandler = async (
   console.log("Error from Global Error Handler", err);
   // }
   let isSafe = false; // এই বার্তা ইউজারকে দেখানো নিরাপদ
-  
+
   let statusCode: number = httpStatus.INTERNAL_SERVER_ERROR;
   let errorMessage = err.message || "Internal Server Error";
   const errorName = err.name || "Internal Server Error";
@@ -70,7 +70,6 @@ export const globalErrorHandler = async (
   //     error: config.node_env === "development" ? err : undefined,
   //     stack: config.node_env === "development" ? err.stack : undefined,
   //   });
-
 
   // AppError ও চেনা Prisma error-এর branch-এ isSafe = true বসান
   res.status(statusCode).json({
